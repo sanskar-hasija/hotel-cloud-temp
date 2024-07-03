@@ -16,7 +16,7 @@ config = {
     'credentials': {
         'usernames': {
             'hc': {
-                'name': 'User One',
+                'name': 'Hotel Cloud',
                 'password': 'hc_cloud'
             },
             'sanskar': {
