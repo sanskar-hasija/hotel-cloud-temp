@@ -1,0 +1,15 @@
+cookie:
+  expiry_days: 30
+  key: some_signature_key
+  name: some_cookie_name
+credentials:
+  usernames:
+    hc:
+      name: User One
+      password: hc_cloud
+    sanskar:
+      name: User Two
+      password: sanskar
+preauthorized:
+  emails:
+  - email@domain.com

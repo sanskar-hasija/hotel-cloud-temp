@@ -1,151 +1,457 @@
-import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+#################
+TEST_PREDS_PATH = "experiments/test_preds"
+RESERVATION_PATH = "dynamic_reservations_feat_new.pq"
+#################
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+import streamlit as st
+import plotly.graph_objects as go
+import streamlit_authenticator as stauth
+import yaml
+import pandas as pd
+import os 
+import glob
+
+# Define the YAML configuration for authentication
+config = {
+    'credentials': {
+        'usernames': {
+            'hc': {
+                'name': 'User One',
+                'password': 'hc_cloud'
+            },
+            'sanskar': {
+                'name': 'User Two',
+                'password': 'sanskar'
+            }
+        }
+    },
+    'cookie': {
+        'expiry_days': 30,
+        'key': 'some_signature_key',
+        'name': 'some_cookie_name'
+    },
+    'preauthorized': {
+        'emails': ['email@domain.com']
+    }
+}
+
+# Save the configuration to a file
+with open('config.yaml', 'w') as file:
+    yaml.dump(config, file, default_flow_style=False)
+
+# Load the configuration file
+with open('config.yaml') as file:
+    config = yaml.safe_load(file)
+
+# Initialize the authenticator
+authenticator = stauth.Authenticate(
+    config['credentials'],
+    config['cookie']['name'],
+    config['cookie']['key'],
+    config['cookie']['expiry_days'],
+    config['preauthorized']
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Display the login form
+auth_status = authenticator.login('main', fields = {'Form name': 'Welcome'})
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+if auth_status[1]:
+    st.write(f'Welcome *{auth_status[0]}*')
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+    # Your Plotly plots go here
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[1, 2, 3], y=[4, 5, 6], mode='lines', name='lines'))
+    st.plotly_chart(fig)
+    
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    data = pd.read_parquet(RESERVATION_PATH)
+    data = data.query(f'lead_in <=120 & lead_in >=3')
+    test_start_date = "2024-01-01"
+    data = data[data["stay_date"] >= test_start_date]
+    data["stay_day_of_week"] = data["stay_date"].dt.day_of_week
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+
+
+    model_names = glob.glob(f"{TEST_PREDS_PATH}/*.csv")
+    model_names = [os.path.basename(m).replace(".csv", "") for m in model_names]
+
+    for model in model_names:
+        preds = pd.read_csv(f"experiments/test_preds/{model}.csv")
+        assert len(preds) == len(data)
+        data[model] = preds["preds"].values
+
+        data[f'{model}_error'] = data[model] - data["pickup_3"]
+        data[f'abs_error_{model}'] = abs(data[f'{model}_error'])
+        data[f'error_cum_abs_{model}'] = data.groupby("stay_date")[f'abs_error_{model}'].cumsum()
+        data[f'error_cum_{model}'] = data.groupby("stay_date")[f'{model}_error'].cumsum()
+
+        data[f'{model}_cumulative_3'] = data[model] + data["cumulative_reservations"]
+
+        
+
+    data = data.query(f'lead_in <=30 & lead_in >=3')
+
+    fig = go.Figure()
+
+
+    dropdown_buttons = []
+    number_of_models = len(model_names) + 1
+
+    for lead_in in range(4, 28):
+        lead_in_data = data[data["lead_in"] == lead_in]
+        
+        
+        actual_means = lead_in_data.groupby("stay_day_of_week")["pickup_3"].mean()
+        fig.add_trace(go.Bar(y=actual_means, name="Actual", marker=dict(line=dict(color='black', width=2)), visible=(lead_in == 4)))
+        
+        
+        for model_name in model_names:
+            predicted_means = lead_in_data.groupby("stay_day_of_week")[model_name].mean()
+            fig.add_trace(go.Bar(y=predicted_means, name=model_name, visible=(lead_in == 4)))
+        
+        visibility_array = [False] * number_of_models * (28 - 4)
+        start_index = number_of_models * (lead_in - 4)
+        for i in range(number_of_models):
+            visibility_array[start_index + i] = True
+
+        dropdown_buttons.append(
+            dict(
+                label=f'Lead_in {lead_in}',
+                method='update',
+                args=[{'visible': visibility_array,
+                    'title': f'Lead_in {lead_in}'}
+                    ]
+            )
+        )
+        
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                active=0,
+                buttons=dropdown_buttons,
+                direction="down",
+                showactive=True,
+                x=1.05,  
+                xanchor='left',
+                y=1.15,  
+                yanchor='top'
+            )
+        ],
+        title='Lead_in Analysis per Model',
+        title_x=0.4,
+        barmode='group'  
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    fig.update_xaxes(title_text="Day of Week")
+    fig.update_yaxes(title_text="3 days Look Ahead Individual Reservations")
 
-    return gdp_df
+    st.plotly_chart(fig)
 
-gdp_df = get_gdp_data()
+    stay_range = sorted([str(date.date()) for date in data['stay_date'].unique()])
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    fig = go.Figure()
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+    for stay_date in stay_range:
+        filtered_data = data[data["stay_date"] == stay_date]
+        
+        fig.add_trace(go.Scatter(
+        x=filtered_data["lead_in"],
+        y=filtered_data["pickup_3"],
+        mode="markers+lines",
+        name="Actual",
+        marker=dict(color="red", symbol="circle", size=3),  
+        line=dict(color="black", width=2, dash='dash'),  
+        visible=(stay_date == stay_range[0])  
+    ))
+        
+        for model in model_names:
+            fig.add_trace(go.Scatter(
+                x=filtered_data["lead_in"],
+                y=filtered_data[model],
+                mode="markers+lines",
+                name=f"{model} , MAE: {filtered_data[f'abs_error_{model}'].mean():.2f}",
+                marker=dict(size=2),
+                visible=(stay_date == stay_range[0])  
+            ))
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+    buttons = []
+    for stay_date in stay_range:
+        visible = [date == stay_date for date in stay_range for _ in (range(1 + len(model_names)))]
+        button = dict(
+            label=str(stay_date),
+            method="update",
+            args=[{"visible": visible},
+                {"title": f"Actual and Predicted Pickup, Stay Date: {stay_date}"}])
+        buttons.append(button)
 
-st.header(f'GDP in {to_year}', divider='gray')
+    fig.update_layout(
+        title=f"Actual and Predicted Pickup, Stay Date: {stay_range[0]}",
+        title_x = 0.45,
+        xaxis_title="Lead In",
+        yaxis_title="3D Look Ahead Reservations",
+        showlegend=True,
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            direction="down",
+            pad={"r": 10, "t": 10},
+            showactive=True,
+            x=1.03,
+            xanchor="left",
+            y=1.15,
+            yanchor="top"
+        )]
+    )
 
-''
+    st.plotly_chart(fig)
 
-cols = st.columns(4)
+    stay_range = sorted([str(date.date()) for date in data['stay_date'].unique()])
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+    fig = go.Figure()
 
-    with col:
-        first_gdp = first_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
+    for stay_date in stay_range:
+        filtered_data = data[data["stay_date"] == stay_date]
+        
+        fig.add_trace(go.Scatter(
+        x=filtered_data["lead_in"],
+        y=filtered_data["cumulative_reservations_3"],
+        mode="markers+lines",
+        name="Actual Reservations",
+        marker=dict(color="red", symbol="circle", size=3),  
+        line=dict(color="black", width=2, dash='dash'),  
+        visible=(stay_date == stay_range[0])  
+    ))
+        
+        for model in model_names:
+            diff = (filtered_data[f'{model}_cumulative_3'] - filtered_data["cumulative_reservations_3"]).mean()
+            fig.add_trace(go.Scatter(
+                x=filtered_data["lead_in"],
+                y=filtered_data[f'{model}_cumulative_3'],
+                mode="markers+lines",
+                name=f"{model} , Cumulative Error: {diff:.2f}",
+                marker=dict(size=2),
+                visible=(stay_date == stay_range[0])  
+            ))
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+    buttons = []
+    for stay_date in stay_range:
+        visible = [date == stay_date for date in stay_range for _ in (range(1 + len(model_names)))]
+        button = dict(
+            label=str(stay_date),
+            method="update",
+            args=[{"visible": visible},
+                {"title": f"Actual and Predicted Cumulative Reservations, Stay Date: {stay_date}"}])
+        buttons.append(button)
+
+    fig.update_layout(
+        title=f"Actual and Predicted Cumulative Reservations, Stay Date: {stay_range[0]}",
+        title_x = 0.45,
+        xaxis_title="Lead In",
+        yaxis_title="Cumulative Reservations",
+        showlegend=True,
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            direction="down",
+            pad={"r": 10, "t": 10},
+            showactive=True,
+            x=1.03,
+            xanchor="left",
+            y=1.15,
+            yanchor="top"
+        )]
+    )
+
+    fig.update_xaxes(autorange="reversed")
+
+    st.plotly_chart(fig)
+
+    fig = go.Figure()
+
+
+    fig.add_trace(go.Scatter(
+        x=[0, 32],  
+        y=[0, 0],  
+        mode="lines",
+        name="y=0 (Zero Error Line)",
+        line=dict(color="black", width=2, dash='dash'),
+        visible=True  
+    ))
+
+
+    for stay_date in stay_range:
+        filtered_data = data[data["stay_date"] == stay_date]
+        
+        for model in model_names:
+            mean_error = filtered_data[f'{model}_error'].mean()
+            fig.add_trace(go.Scatter(
+                x=filtered_data["lead_in"],
+                y=filtered_data[f'{model}_error'],
+                mode="markers+lines",
+                name=f"{model}, Mean Error : {mean_error:.2f}",
+                marker=dict(size=2),
+                visible=(stay_date == stay_range[0])  #
+            ))
+
+    buttons = []
+    for i, stay_date in enumerate(stay_range):
+        
+        visible = [True] + [False] * len(model_names) * len(stay_range)
+        start = 1 + i * len(model_names)  # Adjust start point for visibility toggling
+        visible[start:start + len(model_names)] = [True] * len(model_names)
+        button = dict(
+            label=str(stay_date),
+            method="update",
+            args=[{"visible": visible},
+                {"title": f"Error Analysis, Stay Date: {stay_date}"}])
+        buttons.append(button)
+
+
+    fig.update_layout(
+        title=f"Error Analysis, Stay Date: {stay_range[0]}",
+        title_x=0.45,
+        xaxis_title="Lead In",
+        yaxis_title="Error",
+        showlegend=True,
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            direction="down",
+            pad={"r": 10, "t": 10},
+            showactive=True,
+            x=1.03,
+            xanchor="left",
+            y=1.15,
+            yanchor="top"
+        )]
+    )
+
+    st.plotly_chart(fig)
+
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=[0, 32],  
+        y=[0, 0],  
+        mode="lines",
+        name="y=0 (Zero Error Line)",
+        line=dict(color="black", width=2, dash='dash'),
+        visible=True  
+    ))
+
+    for stay_date in stay_range:
+        filtered_data = data[data["stay_date"] == stay_date]
+        
+        for model in model_names:
+            error = filtered_data[f'error_cum_{model}'].mean()
+            fig.add_trace(go.Scatter(
+                x=filtered_data["lead_in"],
+                y=filtered_data[f'error_cum_{model}'],
+                mode="markers+lines",
+                name=f"{model}, Cumulative Error : {error:.2f}",
+                marker=dict(size=2),
+                visible=(stay_date == stay_range[0])  
+            ))
+
+    buttons = []
+    for i, stay_date in enumerate(stay_range):
+        
+        visible = [True] + [False] * len(model_names) * len(stay_range)
+        start = 1 + i * len(model_names)  
+        visible[start:start + len(model_names)] = [True] * len(model_names)
+        button = dict(
+            label=str(stay_date),
+            method="update",
+            args=[{"visible": visible},
+                {"title": f"Cumulative Error Analysis, Stay Date: {stay_date}"}])
+        buttons.append(button)
+
+
+    fig.update_layout(
+        title=f"Cumulative Error Analysis, Stay Date: {stay_range[0]}",
+        title_x=0.45,
+        xaxis_title="Lead In",
+        yaxis_title="Cumulative Error",
+        showlegend=True,
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            direction="down",
+            pad={"r": 10, "t": 10},
+            showactive=True,
+            x=1.03,
+            xanchor="left",
+            y=1.15,
+            yanchor="top"
+        )]
+    )
+
+
+    st.plotly_chart(fig)
+
+    fig = go.Figure()
+
+    for stay_date in stay_range:
+        filtered_data = data[data["stay_date"] == stay_date]
+        
+        
+        for model in model_names:
+            abs_cum_error = filtered_data[f'error_cum_abs_{model}'].mean()
+            fig.add_trace(go.Scatter(
+                x=filtered_data["lead_in"],
+                y=filtered_data[f'error_cum_abs_{model}'],
+                mode="markers+lines",
+                name=f"{model}, Absolute Cumulative Error : {abs_cum_error:.2f}",
+                marker=dict(size=2),
+                visible=(stay_date == stay_range[0])  
+            ))
+
+    buttons = []
+    for i, stay_date in enumerate(stay_range):
+        
+        visible = [False] * len(model_names) * len(stay_range)
+        start = 1 + i * len(model_names)  
+        visible[start:start + len(model_names)] = [True] * len(model_names)
+        button = dict(
+            label=str(stay_date),
+            method="update",
+            args=[{"visible": visible},
+                {"title": f"Cumulative Error Analysis Absolute, Stay Date: {stay_date}"}])
+        buttons.append(button)
+
+
+    fig.update_layout(
+        title=f"Cumulative Error Analysis ( Absolute ), Stay Date: {stay_range[0]}",
+        title_x=0.45,
+        xaxis_title="Lead In",
+        yaxis_title="Absolute Cumulative Error",
+        showlegend=True,
+        updatemenus=[dict(
+            active=0,
+            buttons=buttons,
+            direction="down",
+            pad={"r": 10, "t": 10},
+            showactive=True,
+            x=1.03,
+            xanchor="left",
+            y=1.15,
+            yanchor="top"
+        )]
+    )
+
+    fig.update_xaxes(autorange="reversed")
+    st.plotly_chart(fig)
+
+    authenticator.logout('Logout', 'sidebar')
+
+
+elif auth_status[1] == False:
+    st.error('Username/password is incorrect')
+
+elif auth_status[1] == None:
+    st.warning('Please enter your username and password')
+    
