@@ -57,11 +57,6 @@ auth_status = authenticator.login('main', fields = {'Form name': 'Welcome'})
 
 if auth_status[1]:
     st.write(f'Welcome *{auth_status[0]}*')
-
-    # Your Plotly plots go here
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=[1, 2, 3], y=[4, 5, 6], mode='lines', name='lines'))
-    st.plotly_chart(fig)
     
 
     data = pd.read_parquet(RESERVATION_PATH)
