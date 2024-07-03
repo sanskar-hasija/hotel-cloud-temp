@@ -56,7 +56,7 @@ authenticator = stauth.Authenticate(
 auth_status = authenticator.login('main', fields = {'Form name': 'Welcome'})
 
 if auth_status[1]:
-    st.write(f'Welcome *{auth_status[0]}*')
+    st.write(f'Welcome')
     
 
     data = pd.read_parquet(RESERVATION_PATH)
